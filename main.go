@@ -95,14 +95,24 @@ func ListIPAddresses() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, i := range ifaces {
-		addrs, _ := i.Addrs()
+	for _, iface := range ifaces {
+		if (iface.Flags & net.FlagRunning) != net.FlagRunning {
+			continue
+		}
+
+		addrs, _ := iface.Addrs()
 		for _, addr := range addrs {
 			var ip string
 			switch v := addr.(type) {
 			case *net.IPNet:
+				if v.IP.IsLoopback() {
+					continue
+				}
 				ip = v.IP.String()
 			case *net.IPAddr:
+				if v.IP.IsLoopback() {
+					continue
+				}
 				ip = v.IP.String()
 			}
 
