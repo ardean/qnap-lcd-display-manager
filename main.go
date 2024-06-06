@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net"
+	"time"
 
 	"github.com/ardean/qnap-lcd-display-manager/display"
 )
@@ -10,23 +11,31 @@ import (
 func main() {
 	log.Println("Starting QNAP LCD Display Manager...")
 
-	ipAddresses, err := ListIPAddresses()
-	panicCheck(err)
-
-	currentIPAddressIndex := 0
-	currentIPAddress := ipAddresses[currentIPAddressIndex]
-
 	lcdAddress := display.Find()
+	if lcdAddress == nil {
+		log.Println("No display found! Exiting...")
+		return
+	}
+
+	var ipAddresses []string
+	var currentIPAddressIndex int = -1
+	var currentIPAddress string
+	var lastButtonPressed time.Time
+	var nextStandby time.Time
+	var isInStandby bool = true
+
+	lcd := *lcdAddress
+
 	defer func() {
 		if lcdAddress != nil {
-			panicCheck((*lcdAddress).Close())
+			panicCheck(lcd.Close())
 		}
 	}()
 
 	PrintIPAddress := func(ipAddress string) {
 		if lcdAddress != nil {
-			(*lcdAddress).Write(0, "IP:")
-			(*lcdAddress).Write(1, ipAddress)
+			lcd.Write(0, "IP:")
+			lcd.Write(1, ipAddress)
 		} else {
 			log.Println("IP:")
 			log.Println(ipAddress)
@@ -58,28 +67,92 @@ func main() {
 		if currentIPAddressIndex != -1 {
 			currentIPAddress = ipAddresses[currentIPAddressIndex]
 			PrintIPAddress(currentIPAddress)
+		} else {
+			PrintIPAddress("-")
 		}
 	}
 
-	if lcdAddress != nil {
-		log.Println("Done")
+	RefreshIPAddresses := func() {
+		var err error
+		ipAddresses, err = ListIPAddresses()
+		panicCheck(err)
 
 		MoveIPAddress(0)
+	}
 
-		(*lcdAddress).Listen(func(buttonIndex int, released bool) bool {
-			if released {
-				if buttonIndex == 1 {
-					MoveIPAddress(1)
-				} else if buttonIndex == 2 {
-					MoveIPAddress(-1)
+	Standby := func() {
+		if isInStandby {
+			return
+		}
+		isInStandby = true
+		lcd.Enable(false)
+	}
+
+	startStandbyWatcher := func() {
+		go (func() {
+			for {
+				time.Sleep(1 * time.Second)
+				if time.Now().After(nextStandby) {
+					Standby()
+					break
 				}
 			}
-
-			return true
-		})
-	} else {
-		log.Println("No display found! Exiting...")
+		})()
 	}
+
+	startIPAddressRefresher := func() {
+		go (func() {
+			for {
+				RefreshIPAddresses()
+				time.Sleep(1 * time.Minute)
+				if time.Now().After(nextStandby) {
+					break
+				}
+			}
+		})()
+	}
+
+	Wakeup := func() {
+		if !isInStandby {
+			return
+		}
+		isInStandby = false
+
+		lcd.Enable(true)
+		startStandbyWatcher()
+		startIPAddressRefresher()
+	}
+
+	OnButtonPress := func(buttonIndex int, released bool) bool {
+		if released {
+			wasInStandby := isInStandby
+
+			Wakeup()
+
+			if wasInStandby {
+				return true
+			}
+
+			if buttonIndex == 1 {
+				MoveIPAddress(1)
+			} else if buttonIndex == 2 {
+				MoveIPAddress(-1)
+			} else {
+				Standby()
+			}
+		}
+
+		lastButtonPressed = time.Now()
+		nextStandby = lastButtonPressed.Add(10 * time.Second)
+
+		return true
+	}
+
+	Wakeup()
+
+	log.Println("Done")
+
+	lcd.Listen(OnButtonPress)
 }
 
 func panicCheck(err error) {
